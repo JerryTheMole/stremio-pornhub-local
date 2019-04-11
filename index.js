@@ -1,4 +1,8 @@
-const modules = require('./modules')
+const { proxy, config } = require('internal')
+const ent = require('ent')
+const namedQueue = require('named-queue')
+const ytdl = require('youtube-dl')
+const needle = require('needle')
 
 const defaults = {
 	name: 'PornHub',
@@ -19,11 +23,11 @@ var url = {
 function pornMetaObj(el, url, oldId) {
 	let img = el.thumb || el.thumbnail
 	if (img)
-		img = modules.get.internal.proxy.addProxy(img, { headers: { referer: img } })
+		img = proxy.addProxy(img, { headers: { referer: img } })
     return {
         backgroundShape: 'contain',
         id: oldId || (defaults.prefix + '_' + (url || el.url).replace(':', '|')),
-        name: modules.get.ent.decode(el.fulltitle || el.title || ' '),
+        name: ent.decode(el.fulltitle || el.title || ' '),
         poster: img,
         posterShape: 'landscape',
         background: img,
@@ -69,136 +73,125 @@ function normalizeResults(proxy, res) {
     })
 }
 
-let videoQueue
+const videoQueue = new namedQueue((task, cb) => {
+    var video = ytdl(task.id, ['-j'])
 
-function setVideoQueue() {
-	if (!videoQueue) {
-		const namedQueue = modules.get['named-queue']
-		videoQueue = new namedQueue((task, cb) => {
-		    var video = modules.get['youtube-dl'](task.id, ['-j'])
+    video.on('error', err => {
+        cb(err || new Error(defaults.name + ' - Youtube-dl Error: Could Not Parse'))
+    })
 
-		    video.on('error', err => {
-		        cb(err || new Error(defaults.name + ' - Youtube-dl Error: Could Not Parse'))
-		    })
-
-		    video.on('info', info => {
-		        if (info.url || info.formats)
-		            cb(null, info)
-		        else
-		            cb(new Error('Youtube-dl Error: No URL in Response'))
-		    })
-		}, Infinity)
-	}
-	return true
-}
+    video.on('info', info => {
+        if (info.url || info.formats)
+            cb(null, info)
+        else
+            cb(new Error('Youtube-dl Error: No URL in Response'))
+    })
+}, Infinity)
 
 function IsJsonString(str) { try { str = JSON.parse(str) } catch (e) { return false }; return str }
 
-module.exports = {
-	manifest: local => {
-		modules.set(local.modules)
-		setVideoQueue()
-		return Promise.resolve({
-			id: 'org.' + defaults.name.toLowerCase().replace(/[^a-z]+/g,''),
-			version: '1.0.0',
+
+const { addonBuilder, getInterface, getRouter } = require('stremio-addon-sdk')
+
+const builder = new addonBuilder({
+	id: 'org.' + defaults.name.toLowerCase().replace(/[^a-z]+/g,''),
+	version: '1.0.0',
+	name: defaults.name,
+	description: 'Porn videos from ' + defaults.name,
+	resources: ['meta', 'stream', 'catalog'],
+	types: ['tv'],
+	idPrefixes: [defaults.prefix],
+	icon: defaults.icon,
+	catalogs: [
+		{
+			id: defaults.prefix + 'catalog',
+			type: 'tv',
 			name: defaults.name,
-			description: 'Porn videos from ' + defaults.name,
-			resources: ['meta', 'stream', 'catalog'],
-			types: ['tv'],
-			idPrefixes: [defaults.prefix],
-			icon: defaults.icon,
-			catalogs: [
-				{
-					id: defaults.prefix + 'catalog',
-					type: 'tv',
-					name: defaults.name,
-					extra: [{ name: 'search' }, { name: 'skip' }]
-				}
-			]
-		})
-	},
-	handler: (args, local) => {
-		modules.set(local.modules)
-		setVideoQueue()
-		return new Promise((resolve, reject) => {
+			extra: [{ name: 'search' }, { name: 'skip' }]
+		}
+	]
+})
 
-			const persist = local.persist
-			const config = local.config
-			const proxy = modules.get.internal.proxy
-			const extra = args.extra || {}
 
-		    if (!args.id) {
-		        reject(new Error(defaults.name + ' - No ID Specified'))
-		        return
-		    }
+builder.defineCatalogHandler(args => {
+	return new Promise((resolve, reject) => {
+		const extra = args.extra || {}
 
-		    if (args.resource == 'catalog') {
-		        if (extra && extra.search) {
-			        const limit = 24
-			        modules.get.needle.get(url.search(extra.search, 0, limit), (err, resp, res) => {
-			            if (res && res.videos && res.videos.length)
-			            	resolve({ metas: normalizeResults(proxy, res.videos).map(el => pornMetaObj(el)) })
-			            else reject(defaults.name + ' - No Response Body 2')
-			        })
-		        } else {
+        if (extra && extra.search) {
+	        const limit = 24
+	        needle.get(url.search(extra.search, 0, limit), (err, resp, res) => {
+	            if (res && res.videos && res.videos.length)
+	            	resolve({ metas: normalizeResults(proxy, res.videos).map(el => pornMetaObj(el)) })
+	            else reject(defaults.name + ' - No Response Body 2')
+	        })
+        } else {
 
-		            const skip = parseInt(extra.skip || 0)
-		            const limit = 96
-		            const page = skip / limit + 1
+            const skip = parseInt(extra.skip || 0)
+            const limit = 96
+            const page = skip / limit + 1
 
-		            modules.get.needle.get(url.catalog(page), { follow_max: 5 }, (err, resp, res) => {
-		            	res = IsJsonString(res)
-		                if (res && res.videos && res.videos.length) {
-		                	console.log(res.videos)
-		                    resolve({ metas: normalizeResults(proxy, res.videos).map(el => pornMetaObj(el)) })
-		                } else reject(defaults.name + ' - No Response Body 1')
-		            })
+            needle.get(url.catalog(page), { follow_max: 5 }, (err, resp, res) => {
+            	res = IsJsonString(res)
+                if (res && res.videos && res.videos.length) {
+                	console.log(res.videos)
+                    resolve({ metas: normalizeResults(proxy, res.videos).map(el => pornMetaObj(el)) })
+                } else reject(defaults.name + ' - No Response Body 1')
+            })
+        }
+	})
+})
 
-		        }
+builder.defineMetaHandler(args => {
+	return new Promise((resolve, reject) => {
+        var metaUrl = args.id.replace(defaults.prefix + '_', '').replace('|', ':')
+        videoQueue.push({ id: metaUrl }, (err, resp) => {
+        	if (!err && resp)
+	            resolve({ meta: pornMetaObj(resp, null, args.id) })
+        	else
+        		reject(defaults.name + ' - Could not get Youtube-dl Meta')
+        })
+	})
+})
 
-		    } else if (args.resource == 'meta') {
-		        var metaUrl = args.id.replace(defaults.prefix + '_', '').replace('|', ':')
-		        videoQueue.push({ id: metaUrl }, (err, resp) => {
-		        	if (!err && resp)
-			            resolve({ meta: pornMetaObj(resp, null, args.id) })
-		        	else
-		        		reject(defaults.name + ' - Could not get Youtube-dl Meta')
-		        })
-		    } else if (args.resource == 'stream') {
-		        var metaUrl = args.id.replace(defaults.prefix + '_', '').replace('|', ':')
-		        videoQueue.push({ id: metaUrl }, (err, resp) => {
-		        	if (!err && resp) {
-		        		let streams
-		                 if (resp.formats) {
-		                    streams = resp.formats.map(el => {
-		                        return {
-		                          availability: 1,
-		                          url: el.url,
-		                          title: el.format_id ? el.format_id : el.height ? (el.height + 'p') : '360p',
-		                          tag: [(el.ext || 'mp4')],
-		                          isFree: 1,
-		                          id: args.id
-		                        }
-		                      })
-		                } else {
-		                    var el = resp
-		                    streams = [{
-		                      availability: 1,
-		                      url: el.url,
-		                      title: el.format_id && isNaN(el.format_id) ? el.format_id : el.height ? (el.height + 'p') : '360p',
-		                      tag: [(el.ext || 'mp4')],
-		                      isFree: 1,
-		                      id: args.id
-		                    }]
-		                }
-		                if (streams && streams.length)
-			                resolve({ streams })
-			            else
-			            	reject(defaults.name + ' - No stream results from Youtube-dl')
-		        	} else
-		        		reject(defaults.name + ' - Could not get Youtube-dl Meta')
-		        })
-			}
-		})
-	}
-}
+builder.defineStreamHandler(args => {
+	return new Promise((resolve, reject) => {
+        var metaUrl = args.id.replace(defaults.prefix + '_', '').replace('|', ':')
+        videoQueue.push({ id: metaUrl }, (err, resp) => {
+        	if (!err && resp) {
+        		let streams
+                 if (resp.formats) {
+                    streams = resp.formats.map(el => {
+                        return {
+                          availability: 1,
+                          url: el.url,
+                          title: el.format_id ? el.format_id : el.height ? (el.height + 'p') : '360p',
+                          tag: [(el.ext || 'mp4')],
+                          isFree: 1,
+                          id: args.id
+                        }
+                      })
+                } else {
+                    var el = resp
+                    streams = [{
+                      availability: 1,
+                      url: el.url,
+                      title: el.format_id && isNaN(el.format_id) ? el.format_id : el.height ? (el.height + 'p') : '360p',
+                      tag: [(el.ext || 'mp4')],
+                      isFree: 1,
+                      id: args.id
+                    }]
+                }
+                if (streams && streams.length)
+	                resolve({ streams })
+	            else
+	            	reject(defaults.name + ' - No stream results from Youtube-dl')
+        	} else
+        		reject(defaults.name + ' - Could not get Youtube-dl Meta')
+        })
+	})
+})
+
+const addonInterface = getInterface(builder)
+
+module.exports = getRouter(addonInterface)
+
