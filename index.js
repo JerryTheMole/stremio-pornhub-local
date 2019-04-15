@@ -99,13 +99,13 @@ const builder = new addonBuilder({
 	name: defaults.name,
 	description: 'Porn videos from ' + defaults.name,
 	resources: ['meta', 'stream', 'catalog'],
-	types: ['tv'],
+	types: ['porn', 'tv'],
 	idPrefixes: [defaults.prefix],
 	icon: defaults.icon,
 	catalogs: [
 		{
 			id: defaults.prefix + 'catalog',
-			type: 'tv',
+			type: 'porn',
 			name: defaults.name,
 			extra: [{ name: 'search' }, { name: 'skip' }]
 		}
